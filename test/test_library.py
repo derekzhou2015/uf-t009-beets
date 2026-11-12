@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import datetime
+import logging
 import os
 import os.path
 import re
@@ -11,6 +13,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+import mutagen.id3
 import pytest
 from mediafile import MediaFile, UnreadableFileError
 
@@ -1325,6 +1328,222 @@ class TestWrite(TestHelper):
         item.date = "foo"
         item.write()
         assert MediaFile(item.filepath).year == clean_year
+
+
+def _raw_id3_tags(path):
+    """Load the on-disk ID3 frames without v2.3-to-v2.4 translation."""
+    tags = mutagen.id3.ID3()
+    tags.load(str(path), translate=False)
+    return tags
+
+
+class TestID3v23Dates(TestHelper):
+    """Tests for original release dates written with ID3v2.3 tags."""
+
+    def _mp3_item(self):
+        return self.add_item_fixture(format="MP3")
+
+    def test_v23_original_date_uses_tory_with_year(self):
+        item = self._mp3_item()
+        item.write(
+            tags={
+                "original_year": 1995,
+                "original_month": 3,
+                "original_day": 1,
+            },
+            id3v23=True,
+        )
+
+        tags = _raw_id3_tags(item.filepath)
+        assert tags.version == (2, 3, 0)
+        assert [str(t) for t in tags["TORY"].text] == ["1995"]
+        assert not tags.getall("TDOR")
+
+    def test_v23_original_date_preserves_month_and_day(self):
+        item = self._mp3_item()
+        item.write(
+            tags={
+                "original_year": 1995,
+                "original_month": 3,
+                "original_day": 1,
+            },
+            id3v23=True,
+        )
+
+        tags = _raw_id3_tags(item.filepath)
+        txxx = [
+            f for f in tags.getall("TXXX") if f.desc.upper() == "ORIGINALDATE"
+        ]
+        assert len(txxx) == 1
+        assert [str(t) for t in txxx[0].text] == ["1995-03-01"]
+
+        # Reading the file back through beets restores the full date.
+        reloaded = beets.library.Item.from_path(item.filepath)
+        reloaded.read()
+        assert (
+            reloaded.original_year,
+            reloaded.original_month,
+            reloaded.original_day,
+        ) == (1995, 3, 1)
+
+    def test_v23_year_only_original_date_writes_no_txxx(self):
+        item = self._mp3_item()
+        item.write(tags={"original_year": 1995}, id3v23=True)
+
+        tags = _raw_id3_tags(item.filepath)
+        assert [str(t) for t in tags["TORY"].text] == ["1995"]
+        assert not [
+            f for f in tags.getall("TXXX") if f.desc.upper() == "ORIGINALDATE"
+        ]
+
+        # Reading back must not fabricate a month or day.
+        reloaded = beets.library.Item.from_path(item.filepath)
+        reloaded.read()
+        assert reloaded.original_year == 1995
+        assert not reloaded.original_month
+        assert not reloaded.original_day
+
+    def test_v23_reducing_date_to_year_removes_stale_txxx(self):
+        item = self._mp3_item()
+        item.write(
+            tags={
+                "original_year": 1995,
+                "original_month": 3,
+                "original_day": 1,
+            },
+            id3v23=True,
+        )
+
+        # Rewrite with only a year: the full-date frame must not linger.
+        item.write(tags={"original_year": 1995}, id3v23=True)
+
+        tags = _raw_id3_tags(item.filepath)
+        assert not [
+            f for f in tags.getall("TXXX") if f.desc.upper() == "ORIGINALDATE"
+        ]
+        reloaded = beets.library.Item.from_path(item.filepath)
+        reloaded.read()
+        assert reloaded.original_year == 1995
+        # Unset month and day are represented as zero by the library.
+        assert not reloaded.original_month
+        assert not reloaded.original_day
+
+    def test_v23_clearing_original_date_removes_stale_txxx(self):
+        item = self._mp3_item()
+        item.write(
+            tags={
+                "original_year": 1995,
+                "original_month": 3,
+                "original_day": 1,
+            },
+            id3v23=True,
+        )
+
+        item.write(
+            tags={
+                "original_year": None,
+                "original_month": None,
+                "original_day": None,
+            },
+            id3v23=True,
+        )
+
+        tags = _raw_id3_tags(item.filepath)
+        assert not tags.getall("TORY")
+        assert not [
+            f for f in tags.getall("TXXX") if f.desc.upper() == "ORIGINALDATE"
+        ]
+
+    def test_v23_rewriting_full_date_replaces_txxx(self):
+        item = self._mp3_item()
+        item.write(
+            tags={
+                "original_year": 1995,
+                "original_month": 3,
+                "original_day": 1,
+            },
+            id3v23=True,
+        )
+        item.write(
+            tags={
+                "original_year": 1996,
+                "original_month": 5,
+                "original_day": 2,
+            },
+            id3v23=True,
+        )
+
+        tags = _raw_id3_tags(item.filepath)
+        txxx = [
+            f for f in tags.getall("TXXX") if f.desc.upper() == "ORIGINALDATE"
+        ]
+        assert len(txxx) == 1
+        assert [str(t) for t in txxx[0].text] == ["1996-05-02"]
+
+    def test_v23_original_date_loss_warns(self, caplog):
+        item = self._mp3_item()
+        with caplog.at_level(logging.WARNING, logger="beets"):
+            item.write(
+                tags={
+                    "original_year": 1995,
+                    "original_month": 3,
+                    "original_day": 1,
+                },
+                id3v23=True,
+            )
+
+        assert any(
+            "TORY" in record.message and "ORIGINALDATE" in record.message
+            for record in caplog.records
+        )
+
+    def test_v23_year_only_original_date_no_warning(self, caplog):
+        item = self._mp3_item()
+        with caplog.at_level(logging.WARNING, logger="beets"):
+            item.write(tags={"original_year": 1995}, id3v23=True)
+
+        assert not any("TORY" in record.message for record in caplog.records)
+
+    def test_v24_mode_unchanged(self):
+        item = self._mp3_item()
+        item.write(
+            tags={
+                "original_year": 1995,
+                "original_month": 3,
+                "original_day": 1,
+            },
+            id3v23=False,
+        )
+
+        tags = _raw_id3_tags(item.filepath)
+        assert tags.version == (2, 4, 0)
+        assert [str(t) for t in tags["TDOR"].text] == ["1995-03-01"]
+        assert not tags.getall("TORY")
+        assert not [
+            f for f in tags.getall("TXXX") if f.desc.upper() == "ORIGINALDATE"
+        ]
+
+    def test_v23_does_not_affect_m4a(self):
+        item = self.add_item_fixture(format="M4A")
+        item.write(
+            tags={
+                "original_year": 1995,
+                "original_month": 3,
+                "original_day": 1,
+            },
+            id3v23=True,
+        )
+
+        mediafile = MediaFile(item.filepath)
+        assert mediafile.original_date == datetime.date(1995, 3, 1)
+
+    def test_v23_ordinary_release_date_keeps_full_precision(self):
+        item = self._mp3_item()
+        item.write(tags={"year": 1995, "month": 3, "day": 1}, id3v23=True)
+
+        tags = _raw_id3_tags(item.filepath)
+        assert [str(t) for t in tags["TYER"].text] == ["1995"]
+        assert [str(t) for t in tags["TDAT"].text] == ["0103"]
 
 
 class TestItemRead(PytestItemHelper):

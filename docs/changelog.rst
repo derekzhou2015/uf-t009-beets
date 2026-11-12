@@ -13,9 +13,16 @@ Unreleased
     New features
     ~~~~~~~~~~~~
 
-..
-    Bug fixes
-    ~~~~~~~~~
+Bug fixes
+~~~~~~~~~
+
+- Fix silent loss of the original release date's month and day when writing
+  MP3 files with the :ref:`id3v23` option enabled. The year is now written to
+  the standard ID3v2.3 ``TORY`` frame so strictly v2.3-compliant players can
+  read it, while the complete date is additionally preserved in a
+  ``TXXX:ORIGINALDATE`` frame (with a warning documenting the precision
+  limitation) and recovered when beets reads the file back. Other file formats
+  and the default ID3v2.4 mode are unaffected.
 
 ..
     For plugin developers

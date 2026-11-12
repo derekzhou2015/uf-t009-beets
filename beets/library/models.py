@@ -29,6 +29,7 @@ from beets.util.pathformats import PF_KEY_DEFAULT
 
 from .exceptions import FileOperationError, ReadError, WriteError
 from .fields import TYPE_BY_FIELD
+from .id3 import prepare_v23_original_date, read_v23_original_date
 from .queries import parse_query_string
 
 if TYPE_CHECKING:
@@ -941,6 +942,18 @@ class Item(LibModel):
                     value = 0
             self[key] = value
 
+        # Recover the full original release date from the TXXX frame that
+        # beets writes in ID3v2.3 mode, where the standard TORY frame can
+        # only store the year.
+        full_original_date = read_v23_original_date(mediafile)
+        if full_original_date is not None:
+            year, month, day = full_original_date
+            self.original_year = year
+            if month:
+                self.original_month = month
+            if day:
+                self.original_day = day
+
         # Database's mtime should now reflect the on-disk value.
         if read_path == self.path:
             self.mtime = self.current_mtime()
@@ -994,6 +1007,13 @@ class Item(LibModel):
 
         # Write the tags to the file.
         mediafile.update(item_tags)
+
+        # ID3v2.3's TORY frame only stores a year, so the full original
+        # release date would otherwise silently lose its month and day.
+        # Preserve the complete date in a TXXX frame before saving.
+        if mediafile.id3v23:
+            prepare_v23_original_date(mediafile)
+
         try:
             mediafile.save()
         except UnreadableFileError as exc:

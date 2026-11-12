@@ -439,6 +439,16 @@ By default, beets writes MP3 tags using the ID3v2.4 standard, the latest version
 of ID3. Enable this option to instead use the older ID3v2.3 standard, which is
 preferred by certain older software such as Windows Media Player.
 
+The ID3v2.3 standard has no frame for a full *original* release date: the
+``TORY`` (original release year) frame can only store a year. When an item's
+original release date also includes a month and day, beets still writes the
+year to ``TORY`` (so strictly ID3v2.3-compliant players can read it) and
+additionally stores the complete date in a user-defined text frame
+(``TXXX:ORIGINALDATE``) to avoid losing information. A warning is logged when
+this happens. The ordinary release date is not affected: its year and day/month
+are stored in the standard ``TYER`` and ``TDAT`` frames. Other file formats
+(such as M4A) are unaffected by this option.
+
 .. _va_name:
 
 va_name
